@@ -1,0 +1,1 @@
+redis-benchmark -h 172.44.0.2 -p 6379 -q -n 100000
