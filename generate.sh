@@ -1,5 +1,14 @@
 #!/bin/bash
 # generate.sh
+set -e
+
+# Use awk to replace the search string with the new value in the file
+# replace_in_file <file> <search> <replace>
+function replace_in_file() {
+  awk -v s="$2" -v r="$3" \
+  '{ if (match($0, s)) { gsub(s, r); }; print }' \
+  "$1" > tmpfile && mv tmpfile "$1"
+}
 
 function show_arguments() {
   echo "[$0][Info] Commandline arguments:"
@@ -59,7 +68,7 @@ done
 # Make sure we have 2 positional arguments
 if [[ ${#positional_args[@]} != 2 ]]; then
   echo "[$0][Error] Number of positional arguments is not 2!" >&2
-  echo "  Usage: $0 <arg1> <arg2> [-ap] [-g pgo_use] [-l pgalloc_use]" >&2
+  echo "  Usage: $0 <app> <allocator> [-ap] [-g pgo_use] [-l pgalloc_use]" >&2
   exit 1
 fi
 
@@ -75,17 +84,22 @@ if [[ $allocator != "pgalloc" && ($pgalloc_profile == "true" || $pgalloc_use != 
 fi
 
 # Generate the app
-rm -rf app
-mkdir app
+rm -rf app && mkdir app
 cp scaffolding/Makefile* app/
 
 makefile_file="app/Makefile"
 search_libs_assign="LIBS :="
 replace_libs_assign="LIBS := "
 
+# Add app libraries, there's no preceding colon
+
 if [[ $target_app == "redis" ]]; then
-  replace_libs_assign+=":\$(UK_LIBS)/lib-musl:\$(UK_LIBS)/lib-lwip:\$(UK_LIBS)/lib-redis"
+  replace_libs_assign+="\$(UK_LIBS)/lib-musl:\$(UK_LIBS)/lib-lwip:\$(UK_LIBS)/lib-redis"
+  mkdir app/fs0
+  cp scaffolding/redis/redis.conf app/fs0
 fi
+
+# Add allocator libraries
 
 if [[ $allocator == "bbuddy" ]]; then
   true
@@ -99,10 +113,41 @@ if [[ $allocator == "mimalloc" ]]; then
   replace_libs_assign+=":\$(UK_LIBS)/lib-mimalloc"
 fi
 
-# Use awk to replace the search string with the new value in the file
-awk -v s="$search_libs_assign" -v r="$replace_libs_assign" \
-'{ if (match($0, s)) { gsub(s, r); }; print }' \
-"$makefile_file" > tmpfile && mv tmpfile "$makefile_file"
+replace_in_file "$makefile_file" "$search_libs_assign" "$replace_libs_assign"
+
+# Generate configs
+defconfig_file=""
+
+if [[ $target_app == "redis" ]]; then
+  defconfig_file="scaffolding/redis/defconfig"
+fi
+
+cp $defconfig_file app
+
+if [[ $allocator == "bbuddy" ]]; then
+  echo "CONFIG_LIBUKBOOT_INITBBUDDY=y" >> app/defconfig
+fi
+
+if [[ $allocator == "pgalloc" ]]; then
+  echo "CONFIG_LIBUKBOOT_INITPGALLOC" >> app/defconfig
+fi
+
+if [[ $allocator == "mimalloc" ]]; then
+  echo "CONFIG_LIBUKBOOT_INITMIMALLOC=y" >> app/defconfig
+fi
+
+cd app
+make olddefconfig
+cd $OLDPWD
+
+replace_in_file app/.config "# CONFIG_PLAT_KVM is not set" "CONFIG_PLAT_KVM=y"
+
+# Copy scripts
+cp scaffolding/scripts/*.sh app
+
+if [[ $target_app == "redis" ]]; then
+  cp scaffolding/redis/*.sh app
+fi
 
 # Done
 echo "[$0][Info] Done."
